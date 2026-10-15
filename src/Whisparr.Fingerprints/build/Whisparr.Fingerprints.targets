@@ -1,0 +1,10 @@
+<Project>
+  <!-- NuGet doesn't preserve Unix file modes; restore ffmpeg's exec bit where it lands. -->
+  <Target Name="WhisparrFingerprintsChmodBuild" AfterTargets="Build" Condition="'$(OS)' != 'Windows_NT' And Exists('$(OutDir)ffmpeg')">
+    <Exec Command="chmod +x &quot;$(OutDir)ffmpeg&quot;" />
+  </Target>
+
+  <Target Name="WhisparrFingerprintsChmodPublish" AfterTargets="Publish" Condition="'$(OS)' != 'Windows_NT' And Exists('$(PublishDir)ffmpeg')">
+    <Exec Command="chmod +x &quot;$(PublishDir)ffmpeg&quot;" />
+  </Target>
+</Project>

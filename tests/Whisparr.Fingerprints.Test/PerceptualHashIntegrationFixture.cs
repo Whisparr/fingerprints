@@ -30,18 +30,23 @@ public class PerceptualHashIntegrationFixture
         }
     }
 
+    /// <remarks>
+    /// tools/oracle-check.sh sets <c>FINGERPRINTS_EXPECTED_PHASH</c> to what stash's own code
+    /// computes with the ffmpeg under test; otherwise the fixture's value applies.
+    /// </remarks>
     [Test]
     public async Task sample_clip_matches_oracle()
     {
         var expected = Vectors.Load("clips", "h264_sample.json");
+        var expectedHash = Environment.GetEnvironmentVariable("FINGERPRINTS_EXPECTED_PHASH")
+                           ?? expected.GetProperty("oracle").GetProperty("phash").GetString();
 
         var hash = await PerceptualHash.ComputeAsync(
             Vectors.Path("clips", "h264_sample.mp4"),
             expected.GetProperty("duration").GetDouble(),
             new PHashOptions { FFmpegPath = _ffmpeg });
 
-        Assert.That(hash, Is.EqualTo(expected.GetProperty("phash").GetString()));
-        Assert.That(hash, Is.EqualTo(expected.GetProperty("oracle").GetProperty("phash").GetString()), "stash via videohashes");
+        Assert.That(hash, Is.EqualTo(expectedHash), "stash via videohashes");
     }
 
     [Test]

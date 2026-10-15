@@ -8,3 +8,4 @@ TestResults/
 coverage*.xml
 /build/ffmpeg/out/
 .DS_Store
+/src/Whisparr.Fingerprints/runtimes/
