@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Whisparr.Fingerprints/Whisparr.Fingerprints.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Whisparr.Fingerprints.Test/Whisparr.Fingerprints.Test.csproj" />
+  </Folder>
+</Solution>

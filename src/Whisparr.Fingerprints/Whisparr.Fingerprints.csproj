@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Whisparr.Fingerprints</RootNamespace>
+    <PackageId>Whisparr.Fingerprints</PackageId>
+    <Authors>Whisparr</Authors>
+    <Description>Stash- and StashDB-compatible video fingerprints (oshash, phash) for .NET, with a bundled static ffmpeg.</Description>
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Whisparr/fingerprints</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Whisparr/fingerprints</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Whisparr.Fingerprints.Test" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
