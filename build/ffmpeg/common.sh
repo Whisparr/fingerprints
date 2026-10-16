@@ -110,6 +110,7 @@ build_ffmpeg() {
         cd "$work/ffmpeg"
         PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure \
             "${ffmpeg_flags[@]}" \
+            --pkg-config=pkg-config \
             --pkg-config-flags=--static \
             --extra-cflags="-I$prefix/include" \
             --extra-ldflags="-L$prefix/lib" \

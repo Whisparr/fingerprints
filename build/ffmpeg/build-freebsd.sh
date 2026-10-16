@@ -27,15 +27,20 @@ if [ ! -d "$sysroot/usr/include" ]; then
     tar -xJf "$base" -C "$sysroot" ./usr/include ./usr/lib ./lib
 fi
 
-cc="clang --target=$target --sysroot=$sysroot -fuse-ld=lld"
+# -fuse-ld only at link time: clang warns about it when compiling, and meson's checks
+# turn that warning into an error
+cc="clang --target=$target --sysroot=$sysroot"
 
 cross_file=$work/cross-$target.ini
 cat > "$cross_file" <<EOF
 [binaries]
-c = ['clang', '--target=$target', '--sysroot=$sysroot', '-fuse-ld=lld']
+c = ['clang', '--target=$target', '--sysroot=$sysroot']
 ar = 'llvm-ar'
 strip = 'llvm-strip'
 pkg-config = 'pkg-config'
+
+[built-in options]
+c_link_args = ['-fuse-ld=lld']
 
 [host_machine]
 system = 'freebsd'
@@ -51,7 +56,7 @@ build_ffmpeg "" \
     --target-os=freebsd \
     --arch="$ffarch" \
     --cc="$cc" \
-    --ld="$cc" \
+    --ld="$cc -fuse-ld=lld" \
     --ar=llvm-ar \
     --nm=llvm-nm \
     --ranlib=llvm-ranlib \

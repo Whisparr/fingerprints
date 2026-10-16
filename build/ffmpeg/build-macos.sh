@@ -36,7 +36,7 @@ fi
 CFLAGS="$flags" LDFLAGS="$flags" build_dav1d "$cross_file"
 
 build_ffmpeg "" \
-    "${cross[@]}" \
+    ${cross[@]+"${cross[@]}"} \
     --cc=clang \
     --extra-cflags="$flags" \
     --extra-ldflags="$flags"
