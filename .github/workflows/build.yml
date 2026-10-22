@@ -1,0 +1,329 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  ffmpeg:
+    name: ffmpeg ${{ matrix.rid }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, runner: ubuntu-24.04, kind: linux, platform: linux/amd64 }
+          - { rid: linux-arm64, runner: ubuntu-24.04-arm, kind: linux, platform: linux/arm64 }
+          - { rid: linux-arm, runner: ubuntu-24.04-arm, kind: linux, platform: linux/arm/v7 }
+          - { rid: osx-x64, runner: macos-15, kind: macos, arch: x86_64 }
+          - { rid: osx-arm64, runner: macos-15, kind: macos, arch: arm64 }
+          - { rid: win-x64, runner: ubuntu-24.04, kind: windows, arch: x86_64 }
+          - { rid: win-x86, runner: ubuntu-24.04, kind: windows, arch: i686 }
+          - { rid: win-arm64, runner: ubuntu-24.04, kind: windows, arch: aarch64 }
+          - { rid: freebsd-x64, runner: ubuntu-24.04, kind: freebsd, arch: x86_64 }
+          - { rid: freebsd-arm64, runner: ubuntu-24.04, kind: freebsd, arch: aarch64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: build/ffmpeg/out/${{ matrix.rid }}
+          key: ffmpeg-${{ matrix.rid }}-${{ hashFiles('build/ffmpeg/*.sh') }}
+
+      - name: Set up QEMU
+        if: steps.cache.outputs.cache-hit != 'true' && matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm
+
+      - name: Build (linux)
+        if: steps.cache.outputs.cache-hit != 'true' && matrix.kind == 'linux'
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} -v "$PWD:/src" -w /src \
+            -e WORK=/tmp/work -e OUT=/src/build/ffmpeg/out/${{ matrix.rid }} \
+            alpine:3.22 sh -c 'apk add --no-cache bash >/dev/null && build/ffmpeg/build-linux.sh'
+
+      - name: Build (macos)
+        if: steps.cache.outputs.cache-hit != 'true' && matrix.kind == 'macos'
+        env:
+          OUT: build/ffmpeg/out/${{ matrix.rid }}
+        run: |
+          brew install nasm meson ninja pkg-config
+          build/ffmpeg/build-macos.sh ${{ matrix.arch }}
+
+      - name: Build (cross)
+        if: steps.cache.outputs.cache-hit != 'true' && (matrix.kind == 'windows' || matrix.kind == 'freebsd')
+        env:
+          OUT: build/ffmpeg/out/${{ matrix.rid }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nasm meson ninja-build pkg-config xz-utils clang lld llvm >/dev/null
+          build/ffmpeg/build-${{ matrix.kind }}.sh ${{ matrix.arch }}
+
+      - name: Inspect
+        run: |
+          ls -la build/ffmpeg/out/${{ matrix.rid }}
+          file build/ffmpeg/out/${{ matrix.rid }}/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.rid }}
+          path: build/ffmpeg/out/${{ matrix.rid }}
+          if-no-files-found: error
+
+  test:
+    name: test ${{ matrix.rid }}
+    needs: ffmpeg
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, runner: ubuntu-24.04 }
+          # arm64 Go fuses multiply-adds, so stash's own phash can be a few bits off there
+          - { rid: linux-arm64, runner: ubuntu-24.04-arm, max-distance: 4 }
+          - { rid: osx-x64, runner: macos-15-intel }
+          - { rid: osx-arm64, runner: macos-15, max-distance: 4 }
+          - { rid: win-x64, runner: windows-2025, exe: .exe }
+          - { rid: win-x86, runner: windows-2025, exe: .exe }
+          - { rid: win-arm64, runner: windows-11-arm, exe: .exe, max-distance: 4 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-${{ matrix.rid }}
+          path: ffmpeg
+
+      - name: Unit tests
+        run: dotnet test Fingerprints.slnx -c Release --filter "TestCategory!=IntegrationTest"
+
+      - name: Oracle check
+        env:
+          ORACLE_MAX_DISTANCE: ${{ matrix.max-distance || 0 }}
+        run: |
+          chmod +x ffmpeg/* || true
+          tools/oracle-check.sh ffmpeg/ffmpeg${{ matrix.exe }} ffmpeg/ffprobe${{ matrix.exe }}
+
+  smoke:
+    name: smoke ${{ matrix.rid }}
+    needs: ffmpeg
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [linux-arm, freebsd-x64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-${{ matrix.rid }}
+          path: ffmpeg
+
+      - name: Set up QEMU
+        if: matrix.rid == 'linux-arm'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm
+
+      - name: Grab a frame (linux-arm)
+        if: matrix.rid == 'linux-arm'
+        run: |
+          chmod +x ffmpeg/*
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/w" -w /w busybox:1.37 sh -c \
+            'ffmpeg/ffmpeg -v error -y -ss 5 -i tests/Whisparr.Fingerprints.Test/Vectors/clips/h264_sample.mp4 -frames:v 1 -vf scale=160:-2 -c:v bmp -f rawvideo - | wc -c'
+
+      - name: Grab a frame (freebsd)
+        if: matrix.rid == 'freebsd-x64'
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.4'
+          usesh: true
+          run: |
+            chmod +x ffmpeg/*
+            ffmpeg/ffmpeg -v error -y -ss 5 -i tests/Whisparr.Fingerprints.Test/Vectors/clips/h264_sample.mp4 -frames:v 1 -vf scale=160:-2 -c:v bmp -f rawvideo - | wc -c
+
+  pack:
+    needs: [ffmpeg, test, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ffmpeg-*
+          path: artifacts/ffmpeg
+
+      - name: Stage native assets
+        run: |
+          native=src/Whisparr.Fingerprints/runtimes
+          for dir in artifacts/ffmpeg/ffmpeg-*; do
+            rid=${dir##*/ffmpeg-}
+            mkdir -p "$native/$rid/native"
+            cp "$dir"/ffmpeg "$dir"/ffmpeg.exe "$native/$rid/native/" 2>/dev/null || true
+          done
+          find "$native" -type f | sort
+          count=$(find "$native" -type f | wc -l)
+          [ "$count" -eq 10 ] || { echo "expected 10 RIDs, got $count"; exit 1; }
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-ci.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack
+        run: dotnet pack src/Whisparr.Fingerprints -c Release -o artifacts/nupkg -p:Version=${{ steps.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nupkg
+          path: artifacts/nupkg/*.nupkg
+          if-no-files-found: error
+
+  publish:
+    name: publish feed
+    needs: [pack]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: nupkg
+          path: artifacts/nupkg
+
+      - name: Install Sleet
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/sleet" --version 7.2.0 sleet
+          echo "$RUNNER_TEMP/sleet" >> "$GITHUB_PATH"
+
+      # No `sleet init`: Sleet's docs say init on an existing feed resets its catalog,
+      # symbol server and search settings. The first push creates the feed itself.
+      # --skip-existing makes a re-run of the same tag succeed.
+      # Sleet 7.2.0 needs `path` with serviceURL (no region): without it, the bucket path
+      # is built from RegionEndpoint, which is null here. disablePayloadSigning is the R2
+      # setting in 7.2.0 (there is no provider property). The AWS SDK checksum env vars
+      # keep it to CRC only when required, which R2 accepts.
+      - name: Push to feed
+        env:
+          SLEET_FEED_TYPE: s3
+          SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
+          SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          SLEET_FEED_PATH: https://nuget.whisparr.com/
+          SLEET_FEED_BASEURI: https://nuget.whisparr.com/
+          SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLEET_FEED_DISABLEPAYLOADSIGNING: "true"
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: sleet push artifacts/nupkg --skip-existing --config none --verbosity minimal
+
+      - name: Validate feed
+        env:
+          SLEET_FEED_TYPE: s3
+          SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
+          SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          SLEET_FEED_PATH: https://nuget.whisparr.com/
+          SLEET_FEED_BASEURI: https://nuget.whisparr.com/
+          SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLEET_FEED_DISABLEPAYLOADSIGNING: "true"
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: sleet validate --config none --verbosity minimal
+
+      # Retries cover CDN propagation right after the push. Each restore attempt starts
+      # from an empty NUGET_PACKAGES, so a cached copy can never pass the check.
+      - name: Verify restore from the public feed
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS https://nuget.whisparr.com/index.json | jq -e 'has("resources")' > /dev/null; then
+              ok=1
+              break
+            fi
+            echo "feed index check attempt $attempt failed"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "feed index is not JSON with resources"; exit 1; }
+
+          work="$RUNNER_TEMP/restore-check"
+          export NUGET_PACKAGES="$RUNNER_TEMP/restore-check-packages"
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$work" "$NUGET_PACKAGES"
+            mkdir -p "$work"
+            cat > "$work/nuget.config" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="whisparr" value="https://nuget.whisparr.com/index.json" />
+            </packageSources>
+          </configuration>
+          EOF
+            if dotnet new console -o "$work/app" --no-restore \
+              && dotnet add "$work/app" package Whisparr.Fingerprints --version "$version" \
+              && dotnet restore "$work/app"; then
+              ok=1
+              break
+            fi
+            echo "restore attempt $attempt failed"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "Whisparr.Fingerprints $version did not restore from the feed"; exit 1; }
+
+          # NuGet normalizes the version (for example 1.0.0.0 to 1.0.0), so take the
+          # version it actually resolved rather than the tag text.
+          resolved=$(jq -r '.libraries | keys[] | select(startswith("Whisparr.Fingerprints/")) | split("/")[1]' "$work/app/obj/project.assets.json")
+          test -n "$resolved"
+          test -d "$NUGET_PACKAGES/whisparr.fingerprints/$resolved" || { echo "Whisparr.Fingerprints $resolved is not in the clean package cache"; exit 1; }

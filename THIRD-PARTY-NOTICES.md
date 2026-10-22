@@ -14,8 +14,10 @@ and the hash format follows `pkg/utils/phash.go`. No stash source is included; o
 its parameters are reproduced.
 
 The ffmpeg binaries bundled in the package are built from
-[FFmpeg](https://ffmpeg.org) source by `build/ffmpeg/`, configured `--enable-version3`
-(GPL-3.0). See `build/ffmpeg/README.md` for the exact configuration and source version.
+[FFmpeg](https://ffmpeg.org) source by `build/ffmpeg/` under its default license
+(LGPL-2.1-or-later; no GPL-only components are enabled), linked statically with
+[dav1d](https://code.videolan.org/videolan/dav1d) (BSD-2-Clause). Versions and checksums
+are pinned in `build/ffmpeg/versions.sh`; the configuration is in `build/ffmpeg/common.sh`.
 
 ## goimagehash
 

@@ -16,5 +16,11 @@
     <InternalsVisibleTo Include="Whisparr.Fingerprints.Test" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <None Include="../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
+    <None Include="build/Whisparr.Fingerprints.targets" Pack="true" PackagePath="build/;buildTransitive/" />
+  </ItemGroup>
+
+  <!-- Native ffmpeg per RID, placed here by CI from the ffmpeg build artifacts -->
+  <ItemGroup>
+    <None Include="runtimes/**/native/*" Pack="true" PackagePath="runtimes/" />
   </ItemGroup>
 </Project>

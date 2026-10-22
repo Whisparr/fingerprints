@@ -33,6 +33,7 @@ public static class PerceptualHash
         }
 
         options ??= new PHashOptions();
+        FFmpegLocator.EnsureExecutable(options.FFmpegPath);
 
         var frames = new List<Frame>(Sprite.FrameCount);
         var slowSeek = false;
