@@ -22,6 +22,23 @@ var phash = await PerceptualHash.ComputeAsync(path, duration);
 Both return the strings stash and StashDB use: OSHASH as 16 zero-padded hex digits, PHASH
 as lowercase hex **without** padding.
 
+## Install
+
+Tagged releases are published to the Whisparr NuGet feed, `https://nuget.whisparr.com/index.json`.
+To pull `Whisparr.*` packages from it while everything else still comes from nuget.org, add the
+feed and a package source mapping to your `nuget.config`:
+
+```xml
+<packageSources>
+  <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  <add key="whisparr" value="https://nuget.whisparr.com/index.json" />
+</packageSources>
+<packageSourceMapping>
+  <packageSource key="nuget.org"><package pattern="*" /></packageSource>
+  <packageSource key="whisparr"><package pattern="Whisparr.*" /></packageSource>
+</packageSourceMapping>
+```
+
 ## Matching stash exactly
 
 The phash is a line-for-line port of the Go code stash runs (goimagehash v1.1.0 and

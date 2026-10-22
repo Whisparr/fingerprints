@@ -219,6 +219,70 @@ jobs:
           path: artifacts/nupkg/*.nupkg
           if-no-files-found: error
 
-      - name: Publish to nuget.org
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: dotnet nuget push artifacts/nupkg/*.nupkg --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json
+  publish:
+    name: publish feed
+    needs: [pack]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      # Sleet reads the feed from SLEET_FEED_* variables (used with --config none).
+      # Secrets are only referenced here, never echoed.
+      SLEET_FEED_TYPE: s3
+      SLEET_FEED_PROVIDER: r2
+      SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
+      SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      SLEET_FEED_REGION: auto
+      SLEET_FEED_BASEURI: https://nuget.whisparr.com/
+      SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: nupkg
+          path: artifacts/nupkg
+
+      - name: Install Sleet
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/sleet" --version 7.2.0 sleet
+          echo "$RUNNER_TEMP/sleet" >> "$GITHUB_PATH"
+
+      # No `sleet init`: Sleet's docs say init on an existing feed resets its catalog,
+      # symbol server and search settings. The first push creates the feed itself.
+      # --skip-existing makes a re-run of the same tag succeed.
+      - name: Push to feed
+        run: sleet push artifacts/nupkg --skip-existing --config none --verbosity minimal
+
+      - name: Validate feed
+        run: sleet validate --config none --verbosity minimal
+
+      - name: Verify restore from the public feed
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          curl -fsS https://nuget.whisparr.com/index.json | jq -e 'has("resources")' > /dev/null
+          work="$RUNNER_TEMP/restore-check"
+          rm -rf "$work"
+          mkdir -p "$work"
+          export NUGET_PACKAGES="$RUNNER_TEMP/restore-check-packages"
+          rm -rf "$NUGET_PACKAGES"
+          cat > "$work/nuget.config" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="whisparr" value="https://nuget.whisparr.com/index.json" />
+            </packageSources>
+          </configuration>
+          EOF
+          dotnet new console -o "$work/app" --no-restore
+          dotnet add "$work/app" package Whisparr.Fingerprints --version "$version"
+          dotnet restore "$work/app"
+          test -d "$NUGET_PACKAGES/whisparr.fingerprints/$version" || { echo "Whisparr.Fingerprints $version was not restored from the feed"; exit 1; }
