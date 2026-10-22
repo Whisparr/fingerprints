@@ -226,17 +226,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    env:
-      # Sleet reads the feed from SLEET_FEED_* variables (used with --config none).
-      # Secrets are only referenced here, never echoed.
-      SLEET_FEED_TYPE: s3
-      SLEET_FEED_PROVIDER: r2
-      SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
-      SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-      SLEET_FEED_REGION: auto
-      SLEET_FEED_BASEURI: https://nuget.whisparr.com/
-      SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v7
 
@@ -257,23 +246,63 @@ jobs:
       # No `sleet init`: Sleet's docs say init on an existing feed resets its catalog,
       # symbol server and search settings. The first push creates the feed itself.
       # --skip-existing makes a re-run of the same tag succeed.
+      # Sleet 7.2.0 needs `path` with serviceURL (no region): without it, the bucket path
+      # is built from RegionEndpoint, which is null here. disablePayloadSigning is the R2
+      # setting in 7.2.0 (there is no provider property). The AWS SDK checksum env vars
+      # keep it to CRC only when required, which R2 accepts.
       - name: Push to feed
+        env:
+          SLEET_FEED_TYPE: s3
+          SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
+          SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          SLEET_FEED_PATH: https://nuget.whisparr.com/
+          SLEET_FEED_BASEURI: https://nuget.whisparr.com/
+          SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLEET_FEED_DISABLEPAYLOADSIGNING: "true"
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: sleet push artifacts/nupkg --skip-existing --config none --verbosity minimal
 
       - name: Validate feed
+        env:
+          SLEET_FEED_TYPE: s3
+          SLEET_FEED_BUCKETNAME: ${{ secrets.R2_BUCKET }}
+          SLEET_FEED_SERVICEURL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          SLEET_FEED_PATH: https://nuget.whisparr.com/
+          SLEET_FEED_BASEURI: https://nuget.whisparr.com/
+          SLEET_FEED_ACCESSKEYID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SLEET_FEED_SECRETACCESSKEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLEET_FEED_DISABLEPAYLOADSIGNING: "true"
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: sleet validate --config none --verbosity minimal
 
+      # Retries cover CDN propagation right after the push. Each restore attempt starts
+      # from an empty NUGET_PACKAGES, so a cached copy can never pass the check.
       - name: Verify restore from the public feed
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          curl -fsS https://nuget.whisparr.com/index.json | jq -e 'has("resources")' > /dev/null
+
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS https://nuget.whisparr.com/index.json | jq -e 'has("resources")' > /dev/null; then
+              ok=1
+              break
+            fi
+            echo "feed index check attempt $attempt failed"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "feed index is not JSON with resources"; exit 1; }
+
           work="$RUNNER_TEMP/restore-check"
-          rm -rf "$work"
-          mkdir -p "$work"
           export NUGET_PACKAGES="$RUNNER_TEMP/restore-check-packages"
-          rm -rf "$NUGET_PACKAGES"
-          cat > "$work/nuget.config" <<'EOF'
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$work" "$NUGET_PACKAGES"
+            mkdir -p "$work"
+            cat > "$work/nuget.config" <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <configuration>
             <packageSources>
@@ -282,7 +311,19 @@ jobs:
             </packageSources>
           </configuration>
           EOF
-          dotnet new console -o "$work/app" --no-restore
-          dotnet add "$work/app" package Whisparr.Fingerprints --version "$version"
-          dotnet restore "$work/app"
-          test -d "$NUGET_PACKAGES/whisparr.fingerprints/$version" || { echo "Whisparr.Fingerprints $version was not restored from the feed"; exit 1; }
+            if dotnet new console -o "$work/app" --no-restore \
+              && dotnet add "$work/app" package Whisparr.Fingerprints --version "$version" \
+              && dotnet restore "$work/app"; then
+              ok=1
+              break
+            fi
+            echo "restore attempt $attempt failed"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "Whisparr.Fingerprints $version did not restore from the feed"; exit 1; }
+
+          # NuGet normalizes the version (for example 1.0.0.0 to 1.0.0), so take the
+          # version it actually resolved rather than the tag text.
+          resolved=$(jq -r '.libraries | keys[] | select(startswith("Whisparr.Fingerprints/")) | split("/")[1]' "$work/app/obj/project.assets.json")
+          test -n "$resolved"
+          test -d "$NUGET_PACKAGES/whisparr.fingerprints/$resolved" || { echo "Whisparr.Fingerprints $resolved is not in the clean package cache"; exit 1; }
